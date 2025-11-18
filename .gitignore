@@ -2,11 +2,7 @@
 build/
 cmake-build-debug/
 cmake-build-release/
-external/libtorch/
-external/glad/
-external/imgui/
-external/debug/
-external/release/
+external/*/
 output*
 results
 .idea
