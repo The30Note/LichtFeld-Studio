@@ -2,7 +2,7 @@
 build/
 cmake-build-debug/
 cmake-build-release/
-external/*/
+external/*
 output*
 results
 .idea
