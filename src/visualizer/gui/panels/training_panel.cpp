@@ -249,6 +249,87 @@ namespace gs::gui::panels {
                     ImGui::Text("%s", dataset_params.loading_params.use_fs_cache ? "Enabled" : "Disabled");
                 }
 
+                // Frame Selection - EDITABLE
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("Frame Selection:");
+                ImGui::TableNextColumn();
+                if (can_edit) {
+                    if (ImGui::Checkbox("##enable_frame_selection", &dataset_params.enable_frame_selection)) {
+                        dataset_params_changed = true;
+                    }
+                } else {
+                    ImGui::Text("%s", dataset_params.enable_frame_selection ? "Enabled" : "Disabled");
+                }
+
+                // Frame Selection Mode - EDITABLE (only shown if frame selection is enabled)
+                if (dataset_params.enable_frame_selection) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("  Mode:");
+                    ImGui::TableNextColumn();
+                    if (can_edit) {
+                        ImGui::PushItemWidth(-1);
+                        const char* mode_items[] = {"None", "Spatial", "Temporal", "Both"};
+                        int current_mode = 0;
+                        if (dataset_params.frame_selection_mode == "spatial") current_mode = 1;
+                        else if (dataset_params.frame_selection_mode == "temporal") current_mode = 2;
+                        else if (dataset_params.frame_selection_mode == "both") current_mode = 3;
+                        
+                        if (ImGui::Combo("##frame_selection_mode", &current_mode, mode_items, IM_ARRAYSIZE(mode_items))) {
+                            if (current_mode == 1) dataset_params.frame_selection_mode = "spatial";
+                            else if (current_mode == 2) dataset_params.frame_selection_mode = "temporal";
+                            else if (current_mode == 3) dataset_params.frame_selection_mode = "both";
+                            else dataset_params.frame_selection_mode = "none";
+                            dataset_params_changed = true;
+                        }
+                        ImGui::PopItemWidth();
+                    } else {
+                        ImGui::Text("%s", dataset_params.frame_selection_mode.c_str());
+                    }
+
+                    // Spatial distance threshold - EDITABLE (shown if mode is Spatial or Both)
+                    if (dataset_params.frame_selection_mode == "spatial" || dataset_params.frame_selection_mode == "both") {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::Text("  Min Spatial Dist:");
+                        ImGui::TableNextColumn();
+                        if (can_edit) {
+                            ImGui::PushItemWidth(-1);
+                            if (ImGui::InputFloat("##min_spatial_distance", &dataset_params.min_spatial_distance, 0.01f, 0.1f, "%.3f")) {
+                                if (dataset_params.min_spatial_distance > 0.0f && dataset_params.min_spatial_distance <= 100.0f) {
+                                    dataset_params_changed = true;
+                                }
+                            }
+                            ImGui::PopItemWidth();
+                        } else {
+                            ImGui::Text("%.3f", dataset_params.min_spatial_distance);
+                        }
+                    }
+
+                    // Temporal gap - EDITABLE (shown if mode is Temporal or Both)
+                    if (dataset_params.frame_selection_mode == "temporal" || dataset_params.frame_selection_mode == "both") {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::Text("  Frame Gap:");
+                        ImGui::TableNextColumn();
+                        if (can_edit) {
+                            ImGui::PushItemWidth(-1);
+                            if (ImGui::InputInt("##temporal_gap", &dataset_params.temporal_gap, 1, 5)) {
+                                if (dataset_params.temporal_gap > 0 && dataset_params.temporal_gap <= 1000) {
+                                    dataset_params_changed = true;
+                                }
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("Gap between selected frames (e.g., 5 = keep every 5th frame, skipping 4 frames between)");
+                            }
+                            ImGui::PopItemWidth();
+                        } else {
+                            ImGui::Text("%d", dataset_params.temporal_gap);
+                        }
+                    }
+                }
+
                 // Test Every - EDITABLE (only shown if evaluation is enabled)
                 if (opt_params.enable_eval) {
                     ImGui::TableNextRow();
@@ -662,6 +743,17 @@ namespace gs::gui::panels {
 
         // Apply changes if any were made and we can edit
         if ((opt_params_changed || dataset_params_changed) && can_edit) {
+            // Track if frame selection parameters changed (these require dataset reload)
+            bool frame_selection_changed = false;
+            if (dataset_params_changed) {
+                auto old_data = project->getProjectData().data_set_info;
+                frame_selection_changed = 
+                    (old_data.enable_frame_selection != dataset_params.enable_frame_selection) ||
+                    (old_data.frame_selection_mode != dataset_params.frame_selection_mode) ||
+                    (old_data.min_spatial_distance != dataset_params.min_spatial_distance) ||
+                    (old_data.temporal_gap != dataset_params.temporal_gap);
+            }
+
             // Update optimization parameters if they changed
             if (opt_params_changed) {
                 project->setOptimizationParams(opt_params);
@@ -678,14 +770,58 @@ namespace gs::gui::panels {
 
                 project_data.data_set_info.loading_params.use_cpu_memory = dataset_params.loading_params.use_cpu_memory;
                 project_data.data_set_info.loading_params.use_fs_cache = dataset_params.loading_params.use_fs_cache;
+                
+                // Frame selection options
+                project_data.data_set_info.enable_frame_selection = dataset_params.enable_frame_selection;
+                project_data.data_set_info.frame_selection_mode = dataset_params.frame_selection_mode;
+                project_data.data_set_info.min_spatial_distance = dataset_params.min_spatial_distance;
+                project_data.data_set_info.temporal_gap = dataset_params.temporal_gap;
 
                 // Set the updated project data back
                 project->setProjectData(project_data);
-            }
 
-            ImGui::Separator();
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
-                               "Parameters updated - will be applied when training starts");
+                // If frame selection changed and a dataset is loaded, reload it immediately
+                if (frame_selection_changed) {
+                    auto* scene_manager = ctx.viewer->getSceneManager();
+                    if (scene_manager) {
+                        auto current_dataset_path = scene_manager->getDatasetPath();
+                        if (!current_dataset_path.empty()) {
+                            LOG_INFO("Frame selection parameters changed, reloading dataset: {}", current_dataset_path.string());
+                            
+                            // Update data loading service parameters with new settings
+                            param::TrainingParameters updated_params;
+                            updated_params.dataset = dataset_params;
+                            updated_params.optimization = project->getOptimizationParams();
+                            ctx.viewer->setParameters(updated_params);
+                            
+                            // Reload dataset with updated parameters
+                            auto reload_result = ctx.viewer->loadDataset(current_dataset_path);
+                            if (!reload_result) {
+                                LOG_ERROR("Failed to reload dataset after frame selection change: {}", reload_result.error());
+                                ImGui::Separator();
+                                auto error_msg = std::format("Failed to reload dataset: {}", reload_result.error());
+                                ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", error_msg.c_str());
+                            } else {
+                                ImGui::Separator();
+                                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f),
+                                    "Dataset reloaded with new frame selection settings");
+                            }
+                        } else {
+                            ImGui::Separator();
+                            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                                "Frame selection updated - will be applied when dataset is loaded");
+                        }
+                    }
+                } else {
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                        "Parameters updated - will be applied when training starts");
+                }
+            } else if (opt_params_changed) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                    "Parameters updated - will be applied when training starts");
+            }
         }
 
         ImGui::PopStyleVar();

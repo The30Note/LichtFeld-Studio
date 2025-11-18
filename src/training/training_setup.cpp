@@ -24,6 +24,20 @@ namespace gs::training {
             .progress = [](float percentage, const std::string& message) {
                 LOG_DEBUG("[{:5.1f}%] {}", percentage, message);
             }};
+        
+        // Wire through frame selection options
+        load_options.enable_frame_selection = params.dataset.enable_frame_selection;
+        if (params.dataset.frame_selection_mode == "spatial") {
+            load_options.frame_selection_mode = loader::FrameSelectionMode::Spatial;
+        } else if (params.dataset.frame_selection_mode == "temporal") {
+            load_options.frame_selection_mode = loader::FrameSelectionMode::Temporal;
+        } else if (params.dataset.frame_selection_mode == "both") {
+            load_options.frame_selection_mode = loader::FrameSelectionMode::Both;
+        } else {
+            load_options.frame_selection_mode = loader::FrameSelectionMode::None;
+        }
+        load_options.min_spatial_distance = params.dataset.min_spatial_distance;
+        load_options.temporal_gap = params.dataset.temporal_gap;
 
         // 3. Load the dataset
         LOG_INFO("Loading dataset from: {}", params.dataset.data_path.string());

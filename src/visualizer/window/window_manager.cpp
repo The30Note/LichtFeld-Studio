@@ -11,6 +11,8 @@
 // clang-format on
 #include <iostream>
 #include <print>
+#include <cstdlib>
+#include <string>
 
 namespace gs {
 
@@ -41,6 +43,18 @@ namespace gs {
     }
 
     bool WindowManager::init() {
+        // Enable NVIDIA PRIME render offloading for CUDA-GL interop
+        // This allows OpenGL to use NVIDIA GPU while AMD handles display
+        #ifndef _WIN32
+        // Only set on Linux - Windows doesn't use PRIME
+        if (!std::getenv("__NV_PRIME_RENDER_OFFLOAD")) {
+            setenv("__NV_PRIME_RENDER_OFFLOAD", "1", 0);
+        }
+        if (!std::getenv("__GLX_VENDOR_LIBRARY_NAME")) {
+            setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 0);
+        }
+        #endif
+
         if (!glfwInit()) {
             std::cerr << "Failed to initialize GLFW!" << std::endl;
             return false;
@@ -73,6 +87,24 @@ namespace gs {
             glfwTerminate();
             return false;
         }
+
+        // Verify which GPU OpenGL is using (for CUDA-GL interop debugging)
+        #ifndef _WIN32
+        const char* gl_vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+        const char* gl_renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+        if (gl_vendor && gl_renderer) {
+            std::println("[WindowManager] OpenGL Vendor: {}", gl_vendor);
+            std::println("[WindowManager] OpenGL Renderer: {}", gl_renderer);
+            // Check if NVIDIA PRIME offloading is working
+            if (std::string(gl_vendor).find("NVIDIA") != std::string::npos) {
+                std::println("[WindowManager] OpenGL is using NVIDIA GPU (PRIME offloading active)");
+            } else if (std::string(gl_vendor).find("AMD") != std::string::npos || 
+                       std::string(gl_vendor).find("Mesa") != std::string::npos) {
+                std::println("[WindowManager] WARNING: OpenGL is using AMD/Mesa instead of NVIDIA");
+                std::println("[WindowManager] CUDA-GL interop may fail. Ensure __NV_PRIME_RENDER_OFFLOAD=1 and __GLX_VENDOR_LIBRARY_NAME=nvidia are set before launching.");
+            }
+        }
+        #endif
 
         // Set window focus callback
         glfwSetWindowFocusCallback(window_, window_focus_callback);

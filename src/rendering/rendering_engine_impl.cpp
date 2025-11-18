@@ -355,17 +355,21 @@ namespace gs::rendering {
         auto view = createViewMatrix(viewport);
         auto proj = createProjectionMatrix(viewport);
 
-        return camera_frustum_renderer_.render(cameras, view, proj, scale, train_color, eval_color, world_transform);
+        glm::vec4 train_color_vec4(train_color, 1.0f);
+        glm::vec4 eval_color_vec4(eval_color, 1.0f);
+        return camera_frustum_renderer_.render(cameras, view, proj, scale, train_color_vec4, eval_color_vec4, world_transform);
     }
 
     Result<void> RenderingEngineImpl::renderCameraFrustumsWithHighlight(
         const std::vector<std::shared_ptr<const Camera>>& cameras,
         const ViewportData& viewport,
         float scale,
-        const glm::vec3& train_color,
-        const glm::vec3& eval_color,
+        const glm::vec4& wire_color,
+        const glm::vec4& solid_color,
         int highlight_index,
-        const glm::mat4& world_transform) {
+        const glm::mat4& world_transform,
+        bool show_images,
+        float image_opacity) {
 
         if (!camera_frustum_renderer_.isInitialized()) {
             return {}; // Silent fail if not initialized
@@ -377,7 +381,7 @@ namespace gs::rendering {
         auto view = createViewMatrix(viewport);
         auto proj = createProjectionMatrix(viewport);
 
-        return camera_frustum_renderer_.render(cameras, view, proj, scale, train_color, eval_color, world_transform);
+        return camera_frustum_renderer_.render(cameras, view, proj, scale, wire_color, solid_color, world_transform, show_images, image_opacity);
     }
 
     Result<int> RenderingEngineImpl::pickCameraFrustum(

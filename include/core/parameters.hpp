@@ -112,6 +112,12 @@ namespace gs {
             int timelapse_every = 50;
             int max_width = 3840;
             LoadingParams loading_params;
+            
+            // Frame selection options (for reducing number of images used in training)
+            bool enable_frame_selection = true;
+            std::string frame_selection_mode = "temporal";  // "none", "spatial", "temporal", "both"
+            float min_spatial_distance = 0.1f;  // Minimum 3D distance between selected cameras (in world units)
+            int temporal_gap = 10;               // Gap between selected frames (e.g., 10 = keep every 10th frame, skipping 9 frames between)
 
             nlohmann::json to_json() const;
             static DatasetConfig from_json(const nlohmann::json& j);

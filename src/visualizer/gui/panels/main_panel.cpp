@@ -153,16 +153,28 @@ namespace gs::gui::panels {
             }
 
             ImGui::Text("Colors:");
-            float train_color[3] = {settings.train_camera_color.x, settings.train_camera_color.y, settings.train_camera_color.z};
-            if (ImGui::ColorEdit3("Training##cam", train_color)) {
-                settings.train_camera_color = glm::vec3(train_color[0], train_color[1], train_color[2]);
+            float wire_color[4] = {settings.camera_frustum_wire_color.x, settings.camera_frustum_wire_color.y, settings.camera_frustum_wire_color.z, settings.camera_frustum_wire_color.w};
+            if (ImGui::ColorEdit4("Wire##cam", wire_color)) {
+                settings.camera_frustum_wire_color = glm::vec4(wire_color[0], wire_color[1], wire_color[2], wire_color[3]);
                 settings_changed = true;
             }
 
-            float eval_color[3] = {settings.eval_camera_color.x, settings.eval_camera_color.y, settings.eval_camera_color.z};
-            if (ImGui::ColorEdit3("Evaluation##cam", eval_color)) {
-                settings.eval_camera_color = glm::vec3(eval_color[0], eval_color[1], eval_color[2]);
+            float solid_color[4] = {settings.camera_frustum_solid_color.x, settings.camera_frustum_solid_color.y, settings.camera_frustum_solid_color.z, settings.camera_frustum_solid_color.w};
+            if (ImGui::ColorEdit4("Solid##cam", solid_color)) {
+                settings.camera_frustum_solid_color = glm::vec4(solid_color[0], solid_color[1], solid_color[2], solid_color[3]);
                 settings_changed = true;
+            }
+
+            if (ImGui::Checkbox("Show Images", &settings.camera_frustum_show_images)) {
+                settings_changed = true;
+            }
+
+            if (settings.camera_frustum_show_images) {
+                ImGui::Indent();
+                if (ImGui::SliderFloat("Image Opacity", &settings.camera_frustum_image_opacity, 0.0f, 1.0f)) {
+                    settings_changed = true;
+                }
+                ImGui::Unindent();
             }
 
             ImGui::Unindent();

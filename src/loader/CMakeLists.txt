@@ -23,6 +23,9 @@ add_library(gs_loader STATIC
         formats/sogs.hpp
         formats/sogs.cpp
 
+        # Utility functions
+        utils/frame_selection.cpp
+
         # Concrete loader implementations
         loaders/ply_loader.hpp
         loaders/ply_loader.cpp

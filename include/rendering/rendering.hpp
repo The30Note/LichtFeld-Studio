@@ -273,10 +273,12 @@ namespace gs::rendering {
             const std::vector<std::shared_ptr<const Camera>>& cameras,
             const ViewportData& viewport,
             float scale = 0.1f,
-            const glm::vec3& train_color = glm::vec3(0.0f, 1.0f, 0.0f),
-            const glm::vec3& eval_color = glm::vec3(1.0f, 0.0f, 0.0f),
+            const glm::vec4& wire_color = glm::vec4(50.0f / 255.0f, 50.0f / 255.0f, 50.0f / 255.0f, 1.0f),
+            const glm::vec4& solid_color = glm::vec4(1.0f, 1.0f, 1.0f, 50.0f / 255.0f),
             int highlight_index = -1,
-            const glm::mat4& world_transform = glm::mat4(1.0f)) = 0;
+            const glm::mat4& world_transform = glm::mat4(1.0f),
+            bool show_images = false,
+            float image_opacity = 0.25f) = 0;
 
         // Camera frustum picking
         virtual Result<int> pickCameraFrustum(

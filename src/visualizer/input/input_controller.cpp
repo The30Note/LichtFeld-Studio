@@ -333,55 +333,34 @@ namespace gs::visualizer {
             return;
         }
 
-        // Camera frustum hover detection with improved throttling
+        // Camera frustum hover detection
         if (rendering_manager_ &&
             rendering_manager_->getSettings().show_camera_frustums &&
             isInViewport(x, y) &&
             drag_mode_ == DragMode::None &&
             !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
 
-            // Additional throttling based on movement distance
-            static glm::dvec2 last_pick_pos{-1, -1};
-            static constexpr double MIN_PICK_DISTANCE = 3.0; // pixels
+            auto result = rendering_manager_->pickCameraFrustum(glm::vec2(x, y));
+            if (result >= 0) {
+                const int cam_id = result;
+                if (cam_id != hovered_camera_id_) {
+                    hovered_camera_id_ = cam_id;
+                    LOG_TRACE("Hovering over camera ID: {}", cam_id);
 
-            bool should_pick = false;
-
-            // Check if we moved enough from last pick position
-            if (last_pick_pos.x < 0) {
-                // First pick
-                should_pick = true;
-                last_pick_pos = current_pos;
-            } else {
-                double pick_distance = glm::length(current_pos - last_pick_pos);
-                if (pick_distance >= MIN_PICK_DISTANCE) {
-                    should_pick = true;
-                    last_pick_pos = current_pos;
-                }
-            }
-
-            if (should_pick) {
-                auto result = rendering_manager_->pickCameraFrustum(glm::vec2(x, y));
-                if (result >= 0) {
-                    const int cam_id = result;
-                    if (cam_id != hovered_camera_id_) {
-                        hovered_camera_id_ = cam_id;
-                        LOG_TRACE("Hovering over camera ID: {}", cam_id);
-
-                        // Change cursor to hand
-                        if (current_cursor_ != CursorType::Hand) {
-                            glfwSetCursor(window_, hand_cursor_);
-                            current_cursor_ = CursorType::Hand;
-                        }
+                    // Change cursor to hand
+                    if (current_cursor_ != CursorType::Hand) {
+                        glfwSetCursor(window_, hand_cursor_);
+                        current_cursor_ = CursorType::Hand;
                     }
-                } else {
-                    // No camera under cursor
-                    if (hovered_camera_id_ != -1) {
-                        hovered_camera_id_ = -1;
-                        LOG_TRACE("No longer hovering over camera");
-                        if (current_cursor_ == CursorType::Hand) {
-                            glfwSetCursor(window_, nullptr);
-                            current_cursor_ = CursorType::Default;
-                        }
+                }
+            } else {
+                // No camera under cursor
+                if (hovered_camera_id_ != -1) {
+                    hovered_camera_id_ = -1;
+                    LOG_TRACE("No longer hovering over camera");
+                    if (current_cursor_ == CursorType::Hand) {
+                        glfwSetCursor(window_, nullptr);
+                        current_cursor_ = CursorType::Default;
                     }
                 }
             }

@@ -584,6 +584,12 @@ namespace gs {
             json["test_every"] = test_every;
             json["max_width"] = max_width;
             json["loading_params"] = loading_params.to_json();
+            
+            // Frame selection options
+            json["enable_frame_selection"] = enable_frame_selection;
+            json["frame_selection_mode"] = frame_selection_mode;
+            json["min_spatial_distance"] = min_spatial_distance;
+            json["temporal_gap"] = temporal_gap;
 
             return json;
         }
@@ -600,6 +606,20 @@ namespace gs {
 
             if (j.contains("loading_params")) {
                 dataset.loading_params = LoadingParams::from_json(j["loading_params"]);
+            }
+            
+            // Frame selection options (with defaults if not present)
+            if (j.contains("enable_frame_selection")) {
+                dataset.enable_frame_selection = j["enable_frame_selection"].get<bool>();
+            }
+            if (j.contains("frame_selection_mode")) {
+                dataset.frame_selection_mode = j["frame_selection_mode"].get<std::string>();
+            }
+            if (j.contains("min_spatial_distance")) {
+                dataset.min_spatial_distance = j["min_spatial_distance"].get<float>();
+            }
+            if (j.contains("temporal_gap")) {
+                dataset.temporal_gap = j["temporal_gap"].get<int>();
             }
 
             return dataset;

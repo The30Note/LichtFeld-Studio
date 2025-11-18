@@ -36,6 +36,14 @@ namespace gs::loader {
         Transforms
     };
 
+    // Frame selection mode enum
+    enum class FrameSelectionMode {
+        None,
+        Spatial,
+        Temporal,
+        Both
+    };
+
     // Public types that clients need
     struct LoadOptions {
         int resize_factor = -1;
@@ -43,6 +51,12 @@ namespace gs::loader {
         std::string images_folder = "images";
         bool validate_only = false;
         ProgressCallback progress = nullptr;
+        
+        // Frame selection options
+        bool enable_frame_selection = false;
+        FrameSelectionMode frame_selection_mode = FrameSelectionMode::None;
+        float min_spatial_distance = 0.1f;  // Minimum 3D distance between selected cameras (in world units)
+        int temporal_gap = 1;               // Gap between selected frames (e.g., 5 = keep every 5th frame, skipping 4 frames between)
     };
 
     struct LoadedScene {

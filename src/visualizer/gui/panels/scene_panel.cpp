@@ -33,6 +33,13 @@ namespace gs::gui {
             handleSceneLoaded(event);
         });
 
+        events::state::DatasetLoadCompleted::when([this](const auto& event) {
+            if (event.success && !event.path.empty()) {
+                LOG_DEBUG("Dataset load completed, refreshing image list: {}", event.path.string());
+                loadImageCams(event.path);
+            }
+        });
+
         events::state::SceneCleared::when([this](const auto&) {
             handleSceneCleared();
         });

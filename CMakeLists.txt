@@ -253,6 +253,16 @@ else()
     message(STATUS "TORCH_CUDA_ARCH_LIST: ${TORCH_CUDA_ARCH_LIST}")
 endif()
 
+# Set CUDAToolkit_ROOT if not already set, prioritizing CUDA 13.0
+if(NOT DEFINED CUDAToolkit_ROOT AND EXISTS "/usr/local/cuda-13.0")
+    set(CUDAToolkit_ROOT "/usr/local/cuda-13.0" CACHE PATH "CUDA Toolkit root directory")
+endif()
+
+# Set CUDA compiler if CUDAToolkit_ROOT is set and compiler exists
+if(DEFINED CUDAToolkit_ROOT AND EXISTS "${CUDAToolkit_ROOT}/bin/nvcc")
+    set(CMAKE_CUDA_COMPILER "${CUDAToolkit_ROOT}/bin/nvcc" CACHE FILEPATH "CUDA compiler")
+endif()
+
 enable_language(CUDA)
 find_package(CUDAToolkit 12.8 REQUIRED)
 

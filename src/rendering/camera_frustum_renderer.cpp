@@ -4,10 +4,176 @@
 
 #include "camera_frustum_renderer.hpp"
 #include "core/logger.hpp"
+#include "core/image_io.hpp"
 #include "gl_state_guard.hpp"
 #include <glm/gtc/matrix_transform.hpp>
+#include <glad/glad.h>
+#include <cmath>
 
 namespace gs::rendering {
+
+    static constexpr float WIRE_THICKNESS = 1.0f;
+
+    // CameraTextureCache Implementation
+    CameraFrustumRenderer::CameraTextureCache::CameraTextureCache() {
+        LOG_DEBUG("CameraTextureCache created");
+    }
+
+    CameraFrustumRenderer::CameraTextureCache::~CameraTextureCache() {
+        clear();
+    }
+
+    void CameraFrustumRenderer::CameraTextureCache::clear() {
+        for (auto& [key, entry] : texture_cache_) {
+            if (entry.texture_id > 0) {
+                glDeleteTextures(1, &entry.texture_id);
+                entry.texture_id = 0; // Reset to prevent double-free
+            }
+        }
+        texture_cache_.clear();
+        LOG_DEBUG("CameraTextureCache cleared");
+    }
+
+    unsigned int CameraFrustumRenderer::CameraTextureCache::getTexture(const std::filesystem::path& image_path) {
+        CacheKey key{image_path};
+
+        if (auto it = texture_cache_.find(key); it != texture_cache_.end()) {
+            it->second.last_access = std::chrono::steady_clock::now();
+            LOG_TRACE("Camera texture cache hit for image {}", image_path.filename().string());
+            return it->second.texture_id;
+        }
+
+        if (texture_cache_.size() >= MAX_CACHE_SIZE) {
+            evictOldest();
+        }
+
+        auto [data_check, width, height, channels_check] = load_image(image_path);
+        if (!data_check) {
+            LOG_ERROR("Failed to load image data for dimensions: {}", image_path.string());
+            return 0;
+        }
+        free_image(data_check);
+        
+        LOG_DEBUG("Loading camera image: {}", image_path.string());
+        unsigned int texture_id = loadTexture(image_path);
+
+        if (texture_id == 0) {
+            LOG_ERROR("Failed to load camera texture from {}", image_path.string());
+            return 0;
+        }
+        
+        texture_cache_[key] = {texture_id, width, height, std::chrono::steady_clock::now()};
+        LOG_DEBUG("Cached camera texture {} for image {} ({}x{})", texture_id, image_path.filename().string(), width, height);
+
+        return texture_id;
+    }
+    
+    std::pair<int, int> CameraFrustumRenderer::CameraTextureCache::getImageDimensions(const std::filesystem::path& image_path) const {
+        CacheKey key{image_path};
+        auto it = texture_cache_.find(key);
+        if (it != texture_cache_.end()) {
+            return {it->second.image_width, it->second.image_height};
+        }
+        return {0, 0};
+    }
+
+    void CameraFrustumRenderer::CameraTextureCache::evictOldest() {
+        if (texture_cache_.empty())
+            return;
+
+        auto oldest = texture_cache_.begin();
+        auto oldest_time = oldest->second.last_access;
+
+        for (auto it = texture_cache_.begin(); it != texture_cache_.end(); ++it) {
+            if (it->second.last_access < oldest_time) {
+                oldest = it;
+                oldest_time = it->second.last_access;
+            }
+        }
+
+        LOG_TRACE("Evicting camera texture for image {} from cache", oldest->first.image_path.filename().string());
+        if (oldest->second.texture_id > 0) {
+            glDeleteTextures(1, &oldest->second.texture_id);
+            oldest->second.texture_id = 0; // Reset to prevent double-free
+        }
+        texture_cache_.erase(oldest);
+    }
+
+    unsigned int CameraFrustumRenderer::CameraTextureCache::loadTexture(const std::filesystem::path& path) {
+        if (!std::filesystem::exists(path)) {
+            LOG_ERROR("Camera image file does not exist: {}", path.string());
+            return 0;
+        }
+
+        try {
+            auto [data, width, height, channels] = load_image(path);
+
+            if (!data) {
+                LOG_ERROR("Failed to load image data: {}", path.string());
+                return 0;
+            }
+
+            LOG_TRACE("Loaded camera image: {}x{} with {} channels", width, height, channels);
+
+            // FLIP vertically: OpenGL expects origin at bottom-left, images have origin at top-left
+            std::vector<unsigned char> flipped_data(width * height * channels);
+            size_t row_size = width * channels;
+            for (int y = 0; y < height; ++y) {
+                std::memcpy(
+                    flipped_data.data() + y * row_size,
+                    data + (height - 1 - y) * row_size,
+                    row_size);
+            }
+
+            // Create OpenGL texture
+            unsigned int texture;
+            glGenTextures(1, &texture);
+            glBindTexture(GL_TEXTURE_2D, texture);
+
+            // Determine format based on channels
+            GLenum format = GL_RGB;
+            GLenum internal_format = GL_RGB8;
+
+            if (channels == 1) {
+                format = GL_RED;
+                internal_format = GL_R8;
+            } else if (channels == 2) {
+                format = GL_RG;
+                internal_format = GL_RG8;
+            } else if (channels == 3) {
+                format = GL_RGB;
+                internal_format = GL_RGB8;
+            } else if (channels == 4) {
+                format = GL_RGBA;
+                internal_format = GL_RGBA8;
+            }
+
+            // Upload flipped texture data
+            glTexImage2D(GL_TEXTURE_2D, 0, internal_format, width, height, 0,
+                         format, GL_UNSIGNED_BYTE, flipped_data.data());
+
+            // Set texture parameters
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+            // Generate mipmaps for better quality when scaled
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+
+            // Free image data
+            free_image(data);
+
+            LOG_DEBUG("Created GL texture {} for camera image: {} ({}x{})",
+                      texture, path.filename().string(), width, height);
+            return texture;
+
+        } catch (const std::exception& e) {
+            LOG_ERROR("Exception loading camera image {}: {}", path.string(), e.what());
+            return 0;
+        }
+    }
 
     Result<void> CameraFrustumRenderer::init() {
         LOG_DEBUG("Initializing camera frustum renderer");
@@ -56,6 +222,17 @@ namespace gs::rendering {
             {0.0f, 0.0f, 0.0f} // 4
         };
 
+        // UV coordinates for texture mapping (base plane only)
+        std::vector<glm::vec2> uv_coords = {
+            // Base vertices - map texture to base plane
+            {0.0f, 0.0f}, // 0 bottom-left
+            {1.0f, 0.0f}, // 1 bottom-right
+            {1.0f, 1.0f}, // 2 top-right
+            {0.0f, 1.0f}, // 3 top-left
+            // Apex - no texture
+            {0.5f, 0.5f}  // 4 (center, not used for texture)
+        };
+
         // Face indices (triangles)
         std::vector<unsigned int> face_indices = {
             // Base (facing away)
@@ -88,6 +265,12 @@ namespace gs::rendering {
         }
         vbo_ = std::move(*vbo_result);
 
+        auto uv_vbo_result = create_vbo();
+        if (!uv_vbo_result) {
+            return std::unexpected(uv_vbo_result.error());
+        }
+        uv_vbo_ = std::move(*uv_vbo_result);
+
         auto face_ebo_result = create_vbo();
         if (!face_ebo_result) {
             return std::unexpected(face_ebo_result.error());
@@ -103,13 +286,21 @@ namespace gs::rendering {
         // Build VAO
         VAOBuilder builder(std::move(*vao_result));
 
-        // Vertex positions
+        // Vertex positions (location 0)
         std::span<const float> vertices_data(
             reinterpret_cast<const float*>(vertices.data()),
             vertices.size() * 3);
 
         builder.attachVBO(vbo_, vertices_data, GL_STATIC_DRAW)
             .setAttribute({.index = 0, .size = 3, .type = GL_FLOAT});
+
+        // UV coordinates (location 1)
+        std::span<const float> uv_data(
+            reinterpret_cast<const float*>(uv_coords.data()),
+            uv_coords.size() * 2);
+
+        builder.attachVBO(uv_vbo_, uv_data, GL_STATIC_DRAW)
+            .setAttribute({.index = 1, .size = 2, .type = GL_FLOAT});
 
         // Face indices
         builder.attachEBO(face_ebo_, std::span(face_indices), GL_STATIC_DRAW);
@@ -179,36 +370,67 @@ namespace gs::rendering {
 
     void CameraFrustumRenderer::prepareInstances(const std::vector<std::shared_ptr<const Camera>>& cameras,
                                                  float scale,
-                                                 const glm::vec3& train_color,
-                                                 const glm::vec3& eval_color,
+                                                 const glm::vec4& wire_color,
+                                                 const glm::vec4& solid_color,
                                                  bool for_picking,
                                                  const glm::vec3& view_position,
-                                                 const glm::mat4& world_transform) {
+                                                 const glm::mat4& world_transform,
+                                                 bool show_images) {
 
         // Track if we need to regenerate
         bool needs_regeneration = false;
 
         // Check if we need to regenerate instances
+        // Compare world transform matrices (with epsilon tolerance for floating point comparison)
+        bool world_transform_changed = false;
+        constexpr float transform_epsilon = 1e-6f;
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                if (std::abs(world_transform[i][j] - last_world_transform_[i][j]) > transform_epsilon) {
+                    world_transform_changed = true;
+                    break;
+                }
+            }
+            if (world_transform_changed) break;
+        }
+        
         if (cached_instances_.size() != cameras.size()) {
             needs_regeneration = true;
             LOG_TRACE("Instance count changed: {} -> {}", cached_instances_.size(), cameras.size());
-        } else if (last_scale_ != scale || last_train_color_ != train_color || last_eval_color_ != eval_color) {
+        } else if (last_scale_ != scale || last_wire_color_ != wire_color || last_solid_color_ != solid_color ||
+                   last_show_images_ != show_images || world_transform_changed) {
             needs_regeneration = true;
-            LOG_TRACE("Instance parameters changed");
+            if (world_transform_changed) {
+                LOG_TRACE("World transform changed - regenerating instances to apply rotation and translation");
+            } else {
+                LOG_TRACE("Instance parameters changed");
+            }
+        } else if (!camera_ids_.empty() && camera_ids_.size() == cameras.size()) {
+            // Check if camera IDs match (order matters for texture mapping)
+            bool camera_order_matches = true;
+            for (size_t i = 0; i < cameras.size(); ++i) {
+                if (camera_ids_[i] != cameras[i]->uid()) {
+                    camera_order_matches = false;
+                    break;
+                }
+            }
+            if (!camera_order_matches) {
+                needs_regeneration = true;
+                LOG_TRACE("Camera order changed - regenerating instances to fix texture mapping");
+            }
         }
 
         // Only regenerate if necessary
         if (!needs_regeneration && !cached_instances_.empty()) {
-            // Update visibility based on distance even when using cache
-            updateInstanceVisibility(view_position);
+            last_view_position_ = view_position;
             LOG_TRACE("Using {} cached instances for {}, updating visibility",
                       cached_instances_.size(), for_picking ? "picking" : "rendering");
             return;
         }
 
-        LOG_DEBUG("Regenerating {} instances for {} (scale: {}, train_color: [{}, {}, {}])",
+        LOG_DEBUG("Regenerating {} instances for {} (scale: {}, solid_color: [{}, {}, {}])",
                   cameras.size(), for_picking ? "picking" : "rendering", scale,
-                  train_color.r, train_color.g, train_color.b);
+                  solid_color.r, solid_color.g, solid_color.b);
 
         cached_instances_.clear();
         cached_instances_.reserve(cameras.size());
@@ -245,90 +467,49 @@ namespace gs::rendering {
                 w2c[3][i] = T_acc[i];
             }
 
-            // Camera-to-world transform
             glm::mat4 c2w = glm::inverse(w2c);
-
-            // Apply world transform to camera position
-            // This keeps cameras in sync when the gaussian splat is transformed
             glm::mat4 transformed_c2w = world_transform * c2w;
 
-            // Extract camera position (after world transform)
             glm::vec3 cam_pos = glm::vec3(transformed_c2w[3]);
             camera_positions_.push_back(cam_pos);
 
-            // Apply coordinate system conversion and scale
             glm::mat4 model = transformed_c2w * GL_TO_COLMAP * glm::scale(glm::mat4(1.0f), glm::vec3(scale));
 
-            // Determine color based on camera type
-            bool is_test = cam->image_name().find("test") != std::string::npos;
-            glm::vec3 color = is_test ? eval_color : train_color;
+            glm::vec4 color = solid_color;
 
-            // Calculate alpha based on distance to view position
-            float distance = glm::length(cam_pos - view_position);
-            float alpha = 1.0f;
+            // Get camera FOV and calculate frustum base size
+            // Frustum base is at z=-1 (distance 1.0 from camera)
+            // Base size = 2 * distance * tan(FOV/2)
+            float fov_x = cam->FoVx(); // Horizontal FOV in radians
+            float fov_y = cam->FoVy(); // Vertical FOV in radians
+            
+            // Calculate base dimensions based on FOV
+            // At distance 1.0, width = 2 * tan(fov_x / 2), height = 2 * tan(fov_y / 2)
+            float base_width = 2.0f * std::tan(fov_x * 0.5f);
+            float base_height = 2.0f * std::tan(fov_y * 0.5f);
+            
+            float aspect_ratio = base_width / base_height;
 
-            if (for_picking) {
-                // For picking, keep everything at full alpha so it's pickable
-                // The picking shader will handle the actual visibility
-                alpha = 1.0f;
-            } else {
-                // For rendering, use aggressive fading
-                const float FADE_START_DISTANCE = 5.0f * scale;
-                const float FADE_END_DISTANCE = 0.2f * scale;
-                const float MINIMUM_VISIBLE_DISTANCE = 0.1f * scale;
+            unsigned int texture_id = 0;
 
-                if (distance < MINIMUM_VISIBLE_DISTANCE) {
-                    alpha = 0.0f; // Completely invisible when very close
-                } else if (distance < FADE_END_DISTANCE) {
-                    alpha = 0.05f; // Very faint
-                } else if (distance < FADE_START_DISTANCE) {
-                    float t = (distance - FADE_END_DISTANCE) / (FADE_START_DISTANCE - FADE_END_DISTANCE);
-                    alpha = 0.05f + 0.95f * (t * t * (3.0f - 2.0f * t));
-                }
-            }
+            // Scale frustum base to match camera FOV
+            // Base plane geometry is -0.5 to 0.5 (size 1.0), scale by FOV-based dimensions
+            glm::mat4 fov_scale = glm::scale(glm::mat4(1.0f), glm::vec3(base_width, base_height, 1.0f));
+            glm::mat4 scaled_model = model * fov_scale;
 
-            cached_instances_.push_back({model, color, alpha});
+            cached_instances_.push_back({scaled_model, color, texture_id, aspect_ratio});
             camera_ids_.push_back(cam->uid());
         }
 
         // Update cache parameters
         last_scale_ = scale;
-        last_train_color_ = train_color;
-        last_eval_color_ = eval_color;
+        last_wire_color_ = wire_color;
+        last_solid_color_ = solid_color;
         last_view_position_ = view_position;
+        last_show_images_ = show_images;
+        last_world_transform_ = world_transform;
 
         LOG_DEBUG("Prepared {} instances", cached_instances_.size());
-    }
-
-    void CameraFrustumRenderer::updateInstanceVisibility(const glm::vec3& view_position) {
-        if (camera_positions_.size() != cached_instances_.size()) {
-            LOG_WARN("Cannot update visibility: position count {} != instance count {}",
-                     camera_positions_.size(), cached_instances_.size());
-            return;
-        }
-
-        for (size_t i = 0; i < camera_positions_.size(); ++i) {
-            float distance = glm::length(camera_positions_[i] - view_position);
-            float alpha = 1.0f;
-
-            // For rendering, use aggressive fading
-            const float FADE_START_DISTANCE = 5.0f * last_scale_;
-            const float FADE_END_DISTANCE = 0.2f * last_scale_;
-            const float MINIMUM_VISIBLE_DISTANCE = 0.1f * last_scale_;
-
-            if (distance < MINIMUM_VISIBLE_DISTANCE) {
-                alpha = 0.0f;
-            } else if (distance < FADE_END_DISTANCE) {
-                alpha = 0.05f; // Very faint but still slightly visible
-            } else if (distance < FADE_START_DISTANCE) {
-                float t = (distance - FADE_END_DISTANCE) / (FADE_START_DISTANCE - FADE_END_DISTANCE);
-                alpha = 0.05f + 0.95f * (t * t * (3.0f - 2.0f * t));
-            }
-
-            cached_instances_[i].alpha = alpha;
-        }
-
-        last_view_position_ = view_position;
     }
 
     Result<void> CameraFrustumRenderer::render(
@@ -336,21 +517,29 @@ namespace gs::rendering {
         const glm::mat4& view,
         const glm::mat4& projection,
         float scale,
-        const glm::vec3& train_color,
-        const glm::vec3& eval_color,
-        const glm::mat4& world_transform) {
+        const glm::vec4& wire_color,
+        const glm::vec4& solid_color,
+        const glm::mat4& world_transform,
+        bool show_images,
+        float image_opacity) {
 
         if (!initialized_ || cameras.empty()) {
             return {};
         }
 
-        LOG_TRACE("Rendering {} camera frustums", cameras.size());
+        LOG_TRACE("Rendering {} camera frustums (show_images: {}, opacity: {})", 
+                  cameras.size(), show_images, image_opacity);
 
-        // Extract view position from inverse of view matrix
         glm::vec3 view_position = glm::vec3(glm::inverse(view)[3]);
 
-        // Prepare instance data for rendering (not picking)
-        prepareInstances(cameras, scale, train_color, eval_color, false, view_position, world_transform);
+        // Sort cameras by image path filename
+        std::vector<std::shared_ptr<const Camera>> sorted_cameras = cameras;
+        std::ranges::sort(sorted_cameras, [](const auto& a, const auto& b) {
+            return a->image_path().filename() < b->image_path().filename();
+        });
+
+        // Prepare instance data for rendering (not picking) using sorted cameras
+        prepareInstances(sorted_cameras, scale, wire_color, solid_color, false, view_position, world_transform, show_images);
 
         if (cached_instances_.empty()) {
             return {};
@@ -363,26 +552,18 @@ namespace gs::rendering {
         visible_indices.reserve(cached_instances_.size());
 
         for (size_t i = 0; i < cached_instances_.size(); ++i) {
-            if (cached_instances_[i].alpha > 0.01f) { // Skip nearly invisible frustums
+            if (cached_instances_[i].color.a > 0.01f) { // Skip nearly invisible frustums
                 visible_instances.push_back(cached_instances_[i]);
                 visible_indices.push_back(static_cast<int>(i));
             }
         }
 
-        if (visible_instances.empty()) {
-            LOG_TRACE("No visible camera frustums to render");
-            return {};
-        }
-
-        LOG_TRACE("Rendering {} visible frustums out of {} total", visible_instances.size(), cached_instances_.size());
-
         // Use comprehensive state guard for entire render operation
         GLStateGuard state_guard;
 
-        // Clear any previous OpenGL errors
         while (glGetError() != GL_NO_ERROR) {}
 
-        // Bind shader using RAII - this scope encompasses all uniform setting and drawing
+        // Bind shader using RAII
         {
             ShaderScope shader(shader_);
 
@@ -408,13 +589,28 @@ namespace gs::rendering {
                 LOG_TRACE("pickingMode uniform not found");
             }
 
-            // Find the actual highlighted index in the visible instances
+
             int visible_highlight_index = -1;
-            if (highlighted_camera_ >= 0 && highlighted_camera_ < static_cast<int>(visible_indices.size())) {
-                for (size_t i = 0; i < visible_indices.size(); ++i) {
-                    if (visible_indices[i] == highlighted_camera_) {
-                        visible_highlight_index = static_cast<int>(i);
+            if (highlighted_camera_ >= 0 && highlighted_camera_ < static_cast<int>(cameras.size())) {
+                // Get the camera ID from the original array
+                int highlighted_camera_id = cameras[highlighted_camera_]->uid();
+                
+                // Find this camera in the sorted array
+                int sorted_index = -1;
+                for (size_t i = 0; i < sorted_cameras.size(); ++i) {
+                    if (sorted_cameras[i]->uid() == highlighted_camera_id) {
+                        sorted_index = static_cast<int>(i);
                         break;
+                    }
+                }
+                
+                // Now find this sorted index in the visible_indices array
+                if (sorted_index >= 0) {
+                    for (size_t i = 0; i < visible_indices.size(); ++i) {
+                        if (visible_indices[i] == sorted_index) {
+                            visible_highlight_index = static_cast<int>(i);
+                            break;
+                        }
                     }
                 }
             }
@@ -428,6 +624,28 @@ namespace gs::rendering {
                 LOG_TRACE("highlightColor uniform not found");
             }
 
+            // Set image-related uniforms
+            if (auto result = shader->set("showImages", show_images); !result) {
+                LOG_TRACE("showImages uniform not found");
+            }
+            if (auto result = shader->set("imageOpacity", image_opacity); !result) {
+                LOG_TRACE("imageOpacity uniform not found");
+            }
+            // Set texture unit (GL_TEXTURE0 = 0)
+            if (auto result = shader->set("cameraTexture", 0); !result) {
+                LOG_TRACE("cameraTexture uniform not found");
+            }
+            
+            // Set wire color for wireframe edges
+            if (auto result = shader->set("wireColor", wire_color); !result) {
+                LOG_TRACE("wireColor uniform not found");
+            }
+            
+            // Default to solid rendering mode
+            if (auto result = shader->set("wireframeMode", false); !result) {
+                LOG_TRACE("wireframeMode uniform not found");
+            }
+
             // Bind VAO using RAII
             {
                 VAOBinder vao_bind(vao_);
@@ -438,19 +656,31 @@ namespace gs::rendering {
                     upload_buffer(GL_ARRAY_BUFFER, std::span(visible_instances), GL_DYNAMIC_DRAW);
 
                     // Setup instance attributes while buffer is bound
-                    // Instance transform matrix (locations 1-4)
+                    // Instance transform matrix (locations 2-5, since 0=pos, 1=UV)
                     for (int i = 0; i < 4; ++i) {
-                        glEnableVertexAttribArray(1 + i);
-                        glVertexAttribPointer(1 + i, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                        glEnableVertexAttribArray(2 + i);
+                        glVertexAttribPointer(2 + i, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
                                               reinterpret_cast<void*>(sizeof(glm::vec4) * i));
-                        glVertexAttribDivisor(1 + i, 1);
+                        glVertexAttribDivisor(2 + i, 1);
                     }
 
-                    // Instance color and alpha (location 5) - now vec4
-                    glEnableVertexAttribArray(5);
-                    glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                    // Instance color RGBA (location 6) - vec4
+                    glEnableVertexAttribArray(6);
+                    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
                                           reinterpret_cast<void*>(offsetof(InstanceData, color)));
-                    glVertexAttribDivisor(5, 1);
+                    glVertexAttribDivisor(6, 1);
+
+                    // Instance texture ID (location 7) - use IPointer for integer attribute
+                    glEnableVertexAttribArray(7);
+                    glVertexAttribIPointer(7, 1, GL_UNSIGNED_INT, sizeof(InstanceData),
+                                           reinterpret_cast<void*>(offsetof(InstanceData, texture_id)));
+                    glVertexAttribDivisor(7, 1);
+                    
+                    // Instance aspect ratio (location 8)
+                    glEnableVertexAttribArray(8);
+                    glVertexAttribPointer(8, 1, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                                          reinterpret_cast<void*>(offsetof(InstanceData, aspect_ratio)));
+                    glVertexAttribDivisor(8, 1);
                 }
 
                 // Setup render state
@@ -460,48 +690,142 @@ namespace gs::rendering {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-                // First pass: solid faces with depth
-                if (auto result = shader->set("enableShading", true); !result) {
-                    LOG_ERROR("Failed to set enableShading uniform: {}", result.error());
-                }
+                // First pass: Render images if enabled
+                if (show_images) {
+                    if (auto result = shader->set("imageOpacity", image_opacity); !result) {
+                        LOG_ERROR("Failed to set imageOpacity uniform: {}", result.error());
+                    }
+                    
+                    std::vector<InstanceData> image_instances = visible_instances;
+                    for (auto& inst : image_instances) {
+                        inst.color.a = 1.0f;
+                    }
 
-                {
+                    // Load textures and update instance data with texture IDs
+                    for (size_t i = 0; i < image_instances.size(); ++i) {
+                        int original_index = visible_indices[i];
+                        if (original_index < 0 || static_cast<size_t>(original_index) >= sorted_cameras.size()) {
+                            continue;
+                        }
+                        
+                        // Check distance from view position to camera position
+                        constexpr float IMAGE_NEAR_DISTANCE = 0.005f;
+                        if (static_cast<size_t>(original_index) < camera_positions_.size()) {
+                            float distance = glm::distance(view_position, camera_positions_[original_index]);
+                            if (distance > IMAGE_NEAR_DISTANCE) {
+                                // Skip this image - too far away
+                                image_instances[i].texture_id = 0;
+                                continue;
+                            }
+                        }
+                        
+                        const auto& cam = sorted_cameras[original_index];
+                        if (cam && show_images) {
+                            unsigned int texture_id = texture_cache_.getTexture(cam->image_path());
+                            image_instances[i].texture_id = texture_id;
+                        }
+                    }
+                    
+                    // Upload updated instances with texture IDs
+                    {
+                        BufferBinder<GL_ARRAY_BUFFER> instance_bind(instance_vbo_);
+                        upload_buffer(GL_ARRAY_BUFFER, std::span(image_instances), GL_DYNAMIC_DRAW);
+                    }
+
                     BufferBinder<GL_ELEMENT_ARRAY_BUFFER> face_bind(face_ebo_);
-                    glDrawElementsInstanced(GL_TRIANGLES, num_face_indices_, GL_UNSIGNED_INT, 0, visible_instances.size());
+                    
+                    int textures_rendered = 0;
+                    for (size_t i = 0; i < image_instances.size(); ++i) {
+                        unsigned int texture_id = image_instances[i].texture_id;
+                        
+                        // Render base plane (first 6 indices) with texture if available
+                        if (texture_id > 0) {
+                            glActiveTexture(GL_TEXTURE0);
+                            glBindTexture(GL_TEXTURE_2D, texture_id);
+                            // Draw base plane only (first 2 triangles = 6 indices)
+                            glDrawElementsInstancedBaseInstance(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0, 1, static_cast<GLuint>(i));
+                            textures_rendered++;
+                        }
+                    }
+                    if (textures_rendered > 0) {
+                        LOG_TRACE("Rendered {} camera frustums with textures", textures_rendered);
+                    }
+                    glBindTexture(GL_TEXTURE_2D, 0);
+
+                    GLenum err = glGetError();
+                    if (err != GL_NO_ERROR) {
+                        LOG_ERROR("OpenGL error after drawing textured base planes: 0x{:x}", err);
+                    }
+                    
+                    // Restore original instances for frustum rendering
+                    {
+                        BufferBinder<GL_ARRAY_BUFFER> instance_bind(instance_vbo_);
+                        upload_buffer(GL_ARRAY_BUFFER, std::span(visible_instances), GL_DYNAMIC_DRAW);
+                    }
                 }
 
-                // Check for errors after first draw
+                if (auto result = shader->set("wireframeMode", false); !result) {
+                    LOG_TRACE("wireframeMode uniform not found");
+                }
+                
+                BufferBinder<GL_ELEMENT_ARRAY_BUFFER> face_bind(face_ebo_);
+                
+                // Render side faces only (skip base plane - first 6 indices)
+                for (size_t i = 0; i < visible_instances.size(); ++i) {
+                    glDrawElementsInstancedBaseInstance(GL_TRIANGLES, num_face_indices_ - 6, GL_UNSIGNED_INT, 
+                                                       reinterpret_cast<void*>(6 * sizeof(unsigned int)), 1, static_cast<GLuint>(i));
+                }
+
+                // Check for errors after drawing faces
                 GLenum err = glGetError();
                 if (err != GL_NO_ERROR) {
                     LOG_ERROR("OpenGL error after drawing faces: 0x{:x}", err);
                 }
 
-                // Second pass: wireframe edges
-                glLineWidth(1.0f);
-                if (auto result = shader->set("enableShading", false); !result) {
-                    LOG_ERROR("Failed to set enableShading uniform for wireframe: {}", result.error());
+                // Second pass: wireframe edges on top
+                // Use depth testing with a small bias so wires render through solid faces
+                // but are still occluded by images (which were rendered first)
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_LEQUAL);
+                // Use polygon offset for lines to push them slightly forward in depth
+                glEnable(GL_POLYGON_OFFSET_LINE);
+                glPolygonOffset(0.0f, -1.0f);
+                glLineWidth(WIRE_THICKNESS);
+                
+                // Enable wireframe mode to use wire color
+                if (auto result = shader->set("wireframeMode", true); !result) {
+                    LOG_TRACE("wireframeMode uniform not found");
                 }
 
                 {
                     BufferBinder<GL_ELEMENT_ARRAY_BUFFER> edge_bind(edge_ebo_);
                     glDrawElementsInstanced(GL_LINES, num_edge_indices_, GL_UNSIGNED_INT, 0, visible_instances.size());
                 }
+                
+                // Restore solid rendering mode
+                if (auto result = shader->set("wireframeMode", false); !result) {
+                    LOG_TRACE("wireframeMode uniform not found");
+                }
+                
+                // Restore depth state for subsequent rendering
+                glDisable(GL_POLYGON_OFFSET_LINE);
+                glDepthFunc(GL_LESS);
 
-                // Check for errors after second draw
+                // Check for errors after draw
                 err = glGetError();
                 if (err != GL_NO_ERROR) {
-                    LOG_ERROR("OpenGL error after drawing edges: 0x{:x}", err);
+                    LOG_ERROR("OpenGL error after drawing: 0x{:x}", err);
                 }
 
                 // Cleanup instance attributes before VAO unbinds
-                for (int i = 1; i <= 5; ++i) {
+                for (int i = 2; i <= 8; ++i) {
                     glDisableVertexAttribArray(i);
-                    if (i >= 1 && i <= 5) {
+                    if (i >= 2 && i <= 8) {
                         glVertexAttribDivisor(i, 0);
                     }
                 }
-            } // VAOBinder automatically unbinds here
-        } // ShaderScope automatically unbinds here
+            } 
+        }
 
         LOG_TRACE("Rendered {} camera frustums", visible_instances.size());
         return {};
@@ -528,7 +852,7 @@ namespace gs::rendering {
             glm::vec3 view_position = glm::vec3(glm::inverse(view)[3]);
 
             // Use the same colors as last render to avoid visual changes
-            prepareInstances(cameras, scale, last_train_color_, last_eval_color_, false, view_position, world_transform);
+            prepareInstances(cameras, scale, last_wire_color_, last_solid_color_, true, view_position, world_transform, false);
 
             if (cached_instances_.empty()) {
                 LOG_ERROR("Failed to prepare instances for picking");
@@ -586,8 +910,7 @@ namespace gs::rendering {
 
             shader->set("viewProj", view_proj);
             shader->set("viewPos", view_pos);
-            shader->set("pickingMode", true);   // Enable picking mode
-            shader->set("enableShading", true); // Render solid faces only
+            shader->set("pickingMode", true);
 
             // Set minimum pick distance based on scale - don't pick frustums too close
             float min_pick_distance = scale * 2.0f; // Adjust this value as needed
@@ -601,18 +924,31 @@ namespace gs::rendering {
                 upload_buffer(GL_ARRAY_BUFFER, std::span(cached_instances_), GL_DYNAMIC_DRAW);
 
                 // Setup instance attributes
+                // Instance transform matrix (locations 2-5, since 0=pos, 1=UV)
                 for (int i = 0; i < 4; ++i) {
-                    glEnableVertexAttribArray(1 + i);
-                    glVertexAttribPointer(1 + i, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                    glEnableVertexAttribArray(2 + i);
+                    glVertexAttribPointer(2 + i, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
                                           reinterpret_cast<void*>(sizeof(glm::vec4) * i));
-                    glVertexAttribDivisor(1 + i, 1);
+                    glVertexAttribDivisor(2 + i, 1);
                 }
 
-                // Instance color and alpha (location 5) - now vec4
-                glEnableVertexAttribArray(5);
-                glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                // Instance color and alpha (location 6) - now vec4
+                glEnableVertexAttribArray(6);
+                glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
                                       reinterpret_cast<void*>(offsetof(InstanceData, color)));
-                glVertexAttribDivisor(5, 1);
+                glVertexAttribDivisor(6, 1);
+
+                // Instance texture ID (location 7) - needed even for picking, use IPointer for integer attribute
+                glEnableVertexAttribArray(7);
+                glVertexAttribIPointer(7, 1, GL_UNSIGNED_INT, sizeof(InstanceData),
+                                       reinterpret_cast<void*>(offsetof(InstanceData, texture_id)));
+                glVertexAttribDivisor(7, 1);
+                
+                // Instance aspect ratio (location 8)
+                glEnableVertexAttribArray(8);
+                glVertexAttribPointer(8, 1, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                                      reinterpret_cast<void*>(offsetof(InstanceData, aspect_ratio)));
+                glVertexAttribDivisor(8, 1);
             }
 
             // Enable depth testing
@@ -634,9 +970,9 @@ namespace gs::rendering {
             }
 
             // Cleanup attributes
-            for (int i = 1; i <= 5; ++i) {
+            for (int i = 2; i <= 8; ++i) {
                 glDisableVertexAttribArray(i);
-                if (i >= 1 && i <= 5) {
+                if (i >= 2 && i <= 8) {
                     glVertexAttribDivisor(i, 0);
                 }
             }

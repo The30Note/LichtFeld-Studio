@@ -8,6 +8,7 @@
 #include "core/point_cloud.hpp"
 #include "formats/colmap.hpp"
 #include "loader/filesystem_utils.hpp"
+#include "loader/utils/frame_selection.hpp"
 #include "training/dataset.hpp"
 #include <algorithm>
 #include <cctype>
@@ -199,6 +200,12 @@ namespace gs::loader {
                     static_cast<int>(i));
 
                 cameras.push_back(std::move(cam));
+            }
+
+            // Apply frame selection if enabled
+            // Note: cam_position() is computed in the Camera constructor, so it's available immediately
+            if (options.enable_frame_selection) {
+                cameras = utils::filter_cameras(cameras, options);
             }
 
             // Create dataset configuration with actual images folder

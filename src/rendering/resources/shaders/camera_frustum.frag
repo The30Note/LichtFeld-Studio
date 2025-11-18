@@ -2,59 +2,55 @@
 
 // Inputs from vertex shader
 in vec3 FragPos;
-in vec3 Normal;
 in vec4 vertexColor;
+in vec2 TexCoord;
 flat in int instanceID;
+flat in uint textureID;
 
 // Output
 out vec4 FragColor;
 
 // Uniforms
 uniform vec3 viewPos;
-uniform bool enableShading;
 uniform int highlightIndex = -1;
 uniform vec3 highlightColor = vec3(1.0, 0.85, 0.0);
 uniform bool pickingMode = false;
 uniform float minimumPickDistance = 0.5;
+uniform bool showImages = false;
+uniform float imageOpacity = 0.25;
+uniform sampler2D cameraTexture;
+uniform vec4 wireColor = vec4(1.0, 1.0, 1.0, 1.0);
+uniform bool wireframeMode = false;
 
 void main() {
-    // Calculate distance from camera to fragment
-    float distance = length(viewPos - FragPos);
-    
-    // In picking mode, discard fragments that are too close
     if (pickingMode) {
+        float distance = length(viewPos - FragPos);
         if (distance < minimumPickDistance) {
-            discard;  // Don't render this fragment for picking
+            discard;
         }
-        // In picking mode, just output the encoded color
         FragColor = vertexColor;
         return;
     }
-    
-    // Normal rendering mode
-    vec4 finalColor = vertexColor;
 
-    // Apply highlight if this instance is selected
-    if (instanceID == highlightIndex) {
-        finalColor.rgb = highlightColor;
-        finalColor.a = min(1.0, finalColor.a + 0.3);  // Make highlighted frustum more opaque
+    if (showImages && textureID > 0u) {
+        vec4 imageColor = texture(cameraTexture, TexCoord);
+        vec4 finalColor = vec4(imageColor.rgb, imageOpacity * imageColor.a);
+        
+        if (finalColor.a < 0.01) {
+            discard;
+        }
+        
+        FragColor = finalColor;
+        return;
     }
 
-    if (enableShading) {
-        // Simple lighting
-        vec3 lightDir = normalize(viewPos - FragPos);
-        vec3 norm = normalize(Normal);
-
-        // Ambient + diffuse
-        float ambient = 0.3;
-        float diff = max(dot(norm, lightDir), 0.0);
-        float lighting = ambient + diff * 0.7;
-
-        finalColor.rgb *= lighting;
-    } else {
-        // Wireframe - use the instance color but darker
-        finalColor.rgb *= 0.3;
-        finalColor.a = 1.0;
+    // Use wire color for wireframe rendering, vertex color for solid faces
+    vec4 finalColor = wireframeMode ? wireColor : vertexColor;
+    
+    // Apply highlight only to solid faces, not wireframes
+    if (instanceID == highlightIndex) {
+        finalColor.rgb = highlightColor;
+        finalColor.a = min(1.0, finalColor.a + 0.3);
     }
 
     FragColor = finalColor;

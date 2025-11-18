@@ -71,10 +71,12 @@ namespace gs::visualizer {
         float gizmo_scale = 1.0f;
 
         // Camera frustums
-        bool show_camera_frustums = false;
+        bool show_camera_frustums = true;
         float camera_frustum_scale = 0.25f;
-        glm::vec3 train_camera_color = glm::vec3(1.0f, 1.0f, 1.0f);
-        glm::vec3 eval_camera_color = glm::vec3(1.0f, 0.0f, 0.0f);
+        glm::vec4 camera_frustum_wire_color = glm::vec4(50.0f / 255.0f, 50.0f / 255.0f, 50.0f / 255.0f, 1.0f);
+        glm::vec4 camera_frustum_solid_color = glm::vec4(1.0f, 1.0f, 1.0f, 50.0f / 255.0f);
+        bool camera_frustum_show_images = false;
+        float camera_frustum_image_opacity = 0.25f;
 
         // Split view
         SplitViewMode split_view_mode = SplitViewMode::Disabled;

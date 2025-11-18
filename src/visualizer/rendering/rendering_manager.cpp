@@ -987,6 +987,12 @@ namespace gs::visualizer {
         if (settings_.show_camera_frustums && engine_) {
             LOG_TRACE("Camera frustums enabled, checking for scene_manager...");
 
+            // If grid is not enabled, clear depth buffer to ensure frustums render correctly
+            // (Grid normally clears the depth buffer, so we need to do it when grid is disabled)
+            if (!settings_.show_grid) {
+                glClear(GL_DEPTH_BUFFER_BIT);
+            }
+
             if (!context.scene_manager) {
                 LOG_ERROR("Camera frustums enabled but scene_manager is null in render context!");
                 return;
@@ -1031,10 +1037,12 @@ namespace gs::visualizer {
                 auto frustum_result = engine_->renderCameraFrustumsWithHighlight(
                     cameras, viewport,
                     settings_.camera_frustum_scale,
-                    settings_.train_camera_color,
-                    settings_.eval_camera_color,
+                    settings_.camera_frustum_wire_color,
+                    settings_.camera_frustum_solid_color,
                     highlight_index,
-                    world_transform);
+                    world_transform,
+                    settings_.camera_frustum_show_images,
+                    settings_.camera_frustum_image_opacity);
 
                 if (!frustum_result) {
                     LOG_ERROR("Failed to render camera frustums: {}", frustum_result.error());
